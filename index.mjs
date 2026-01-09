@@ -2,6 +2,73 @@ import { generatePKCE } from "@openauthjs/openauth/pkce";
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
+// static map for core tools
+const TOOL_MAP = {
+  bash: "Bash",
+  read: "Read",
+  glob: "Glob",
+  grep: "Grep",
+  edit: "Edit",
+  write: "Write",
+  task: "Task",
+  webfetch: "WebFetch",
+  websearch: "WebSearch",
+  codesearch: "CodeSearch",
+  todoread: "TodoRead",
+  todowrite: "TodoWrite",
+  skill: "Skill",
+  slashcommand: "SlashCommand",
+  // opencode-kit specific tools
+  lsp: "Lsp",
+  ast_grep: "AstGrep",
+  background_shell: "BackgroundShell",
+  media: "Media",
+  skill_mcp: "SkillMcp",
+};
+
+// MCP server prefixes (tools from these servers get mcp__ prefix)
+const MCP_SERVERS = ["context7", "grep_app", "exa"];
+
+// Derive reverse map for static tools
+const TOOL_REVERSE = Object.fromEntries(
+  Object.entries(TOOL_MAP).map(([k, v]) => [v, k]),
+);
+
+// transform tool name for API (outgoing)
+function toApiToolName(name) {
+  // check static map
+  if (name in TOOL_MAP) return TOOL_MAP[name];
+
+  // check if MCP tool (server_tool or server-tool)
+  for (const server of MCP_SERVERS) {
+    if (name.startsWith(server + "_") || name.startsWith(server + "-")) {
+      const toolPart = name.slice(server.length + 1);
+      return `mcp__${server}__${toolPart}`;
+    }
+  }
+
+  return name;
+}
+
+// transform tool name from API (incoming)
+function fromApiToolName(name) {
+  // check reverse static map
+  if (name in TOOL_REVERSE) return TOOL_REVERSE[name];
+
+  // check if MCP tool (mcp__server__tool)
+  if (name.startsWith("mcp__")) {
+    const rest = name.slice(5);
+    const idx = rest.indexOf("__");
+    if (idx !== -1) {
+      const server = rest.slice(0, idx);
+      const tool = rest.slice(idx + 2);
+      return `${server}_${tool}`;
+    }
+  }
+
+  return name;
+}
+
 /**
  * @param {"max" | "console"} mode
  */
@@ -179,7 +246,6 @@ export async function AnthropicAuthPlugin({ client }) {
               );
               requestHeaders.delete("x-api-key");
 
-              const TOOL_PREFIX = "oc_";
               let body = requestInit.body;
               if (body && typeof body === "string") {
                 try {
@@ -187,7 +253,7 @@ export async function AnthropicAuthPlugin({ client }) {
                   if (parsed.tools && Array.isArray(parsed.tools)) {
                     parsed.tools = parsed.tools.map((tool) => ({
                       ...tool,
-                      name: tool.name ? `${TOOL_PREFIX}${tool.name}` : tool.name,
+                      name: toApiToolName(tool.name),
                     }));
                     body = JSON.stringify(parsed);
                   }
@@ -241,7 +307,13 @@ export async function AnthropicAuthPlugin({ client }) {
                     }
 
                     let text = decoder.decode(value, { stream: true });
-                    text = text.replace(/"name"\s*:\s*"oc_([^"]+)"/g, '"name": "$1"');
+                    text = text.replace(
+                      /"name"\s*:\s*"([^"]+)"/g,
+                      (match, name) => {
+                        const original = fromApiToolName(name);
+                        return original !== name ? `"name": "${original}"` : match;
+                      },
+                    );
                     controller.enqueue(encoder.encode(text));
                   },
                 });
